@@ -1,0 +1,209 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Safety Net: Default-Deny Catch-All
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Reusable Hardened Global Helpers ---
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    function isAdmin() {
+      return isVerified() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        request.auth.token.email == 'champofroman@gmail.com'
+      );
+    }
+
+    // --- Validation Blueprints (Anti-Update-Gap: NO existing() or diff() inside helpers) ---
+    function isValidUserProfile(data) {
+      return data.keys().hasAll(['uid', 'displayName', 'role', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'displayName', 'role', 'createdAt', 'updatedAt'])
+        && data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80
+        && data.role in ['operator', 'viewer', 'admin']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidUserPrivateSecurity(data) {
+      return data.keys().hasAll(['uid', 'email', 'lastLoginAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'email', 'lastLoginAt', 'updatedAt'])
+        && data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 160
+        && data.lastLoginAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidPodControlState(data) {
+      return data.keys().hasAll(['podId', 'label', 'zone', 'enabled', 'lastOperatorUid', 'lastReason', 'updatedAt'])
+        && data.keys().hasOnly(['podId', 'label', 'zone', 'enabled', 'lastOperatorUid', 'lastReason', 'updatedAt'])
+        && data.podId is string && data.podId.size() >= 3 && data.podId.size() <= 40 && data.podId.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.label is string && data.label.size() >= 1 && data.label.size() <= 80
+        && data.zone is string && data.zone.size() >= 1 && data.zone.size() <= 80
+        && data.enabled is bool
+        && data.lastOperatorUid is string && data.lastOperatorUid.size() >= 1 && data.lastOperatorUid.size() <= 128 && data.lastOperatorUid.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.lastReason is string && data.lastReason.size() >= 1 && data.lastReason.size() <= 200
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidSecurityAuditEvent(data) {
+      return data.keys().hasAll(['logId', 'actorUid', 'action', 'targetPodId', 'entryHash', 'status', 'createdAt'])
+        && data.keys().hasOnly(['logId', 'actorUid', 'action', 'targetPodId', 'entryHash', 'status', 'createdAt'])
+        && data.logId is string && data.logId.size() >= 1 && data.logId.size() <= 128 && data.logId.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.actorUid is string && data.actorUid.size() >= 1 && data.actorUid.size() <= 128 && data.actorUid.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.action is string && data.action.size() >= 1 && data.action.size() <= 80
+        && data.targetPodId is string && data.targetPodId.size() >= 1 && data.targetPodId.size() <= 40
+        && data.entryHash is string && data.entryHash.size() >= 16 && data.entryHash.size() <= 128
+        && data.status in ['allowed', 'denied', 'info']
+        && data.createdAt is timestamp;
+    }
+
+    function isValidSimulationSession(data) {
+      return data.keys().hasAll(['sessionId', 'ownerUid', 'name', 'controlMode', 'populationCount', 'pedestrianAqi', 'verifiedReductionPct', 'netPowerW', 'createdAt'])
+        && data.keys().hasOnly(['sessionId', 'ownerUid', 'name', 'controlMode', 'populationCount', 'pedestrianAqi', 'verifiedReductionPct', 'netPowerW', 'createdAt'])
+        && data.sessionId is string && data.sessionId.size() >= 1 && data.sessionId.size() <= 128 && data.sessionId.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128 && data.ownerUid.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 120
+        && data.controlMode in ['centralized_tower', 'fixed_duty', 'independent_local', 'swarm_pso_aco']
+        && data.populationCount is int && data.populationCount >= 0 && data.populationCount <= 500
+        && data.pedestrianAqi is number && data.pedestrianAqi >= 0 && data.pedestrianAqi <= 500
+        && data.verifiedReductionPct is number && data.verifiedReductionPct >= 0 && data.verifiedReductionPct <= 100
+        && data.netPowerW is number && data.netPowerW >= -10000 && data.netPowerW <= 2000
+        && data.createdAt is timestamp;
+    }
+
+    // --- Collection Rules ---
+
+    // 1. User Profiles (No PII) & Isolated Private PII Subcollection
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isVerified() && isValidId(userId) && isOwner(userId)
+        && isValidUserProfile(incoming())
+        && incoming().uid == request.auth.uid
+        && incoming().role in ['operator', 'viewer']
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerified() && isValidId(userId)
+        && isValidUserProfile(incoming())
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (isOwner(userId) && incoming().role == existing().role && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'updatedAt'])) ||
+          (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'role', 'updatedAt']))
+        );
+      allow delete: if false;
+
+      match /private/{docId} {
+        allow get: if isValidId(userId) && isValidId(docId) && docId == 'security' && (isOwner(userId) || isAdmin());
+        allow list: if false;
+        allow create: if isVerified() && isValidId(userId) && isValidId(docId) && docId == 'security' && isOwner(userId)
+          && isValidUserPrivateSecurity(incoming())
+          && incoming().uid == request.auth.uid
+          && incoming().lastLoginAt == request.time
+          && incoming().updatedAt == request.time;
+        allow update: if isVerified() && isValidId(userId) && isValidId(docId) && docId == 'security' && isOwner(userId)
+          && exists(/databases/$(database)/documents/users/$(userId))
+          && isValidUserPrivateSecurity(incoming())
+          && incoming().uid == existing().uid
+          && incoming().lastLoginAt == request.time
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly(['email', 'lastLoginAt', 'updatedAt']);
+        allow delete: if false;
+      }
+    }
+
+    // 2. Admin Allowlist (Read-only for self-check, no client writes)
+    match /admins/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if false;
+      allow create, update, delete: if false;
+    }
+
+    // 3. Individual Pod Activation / Deactivation State
+    match /pods/{podId} {
+      allow get: if isSignedIn() && isValidId(podId);
+      allow list: if isSignedIn() && resource.data.podId is string;
+      allow create: if isVerified() && isValidId(podId)
+        && isValidPodControlState(incoming())
+        && incoming().podId == podId
+        && incoming().lastOperatorUid == request.auth.uid
+        && incoming().updatedAt == request.time;
+      allow update: if isVerified() && isValidId(podId)
+        && isValidPodControlState(incoming())
+        && incoming().podId == existing().podId
+        && incoming().lastOperatorUid == request.auth.uid
+        && incoming().updatedAt == request.time
+        && (
+          incoming().diff(existing()).affectedKeys().hasOnly(['enabled', 'lastOperatorUid', 'lastReason', 'updatedAt']) ||
+          (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly(['label', 'zone', 'enabled', 'lastOperatorUid', 'lastReason', 'updatedAt']))
+        );
+      allow delete: if false;
+    }
+
+    // 4. Cybersecurity Audit Logs (Append-only, immutable)
+    match /audit_logs/{logId} {
+      allow get: if isSignedIn() && isValidId(logId) && (existing().actorUid == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (resource.data.actorUid == request.auth.uid || isAdmin());
+      allow create: if isVerified() && isValidId(logId)
+        && isValidSecurityAuditEvent(incoming())
+        && incoming().logId == logId
+        && incoming().actorUid == request.auth.uid
+        && incoming().createdAt == request.time;
+      allow update, delete: if false;
+    }
+
+    // 5. Saved Simulation Benchmark Sessions (Owner-scoped)
+    match /sessions/{sessionId} {
+      allow get: if isSignedIn() && isValidId(sessionId) && (existing().ownerUid == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (resource.data.ownerUid == request.auth.uid || isAdmin());
+      allow create: if isVerified() && isValidId(sessionId)
+        && isValidSimulationSession(incoming())
+        && incoming().sessionId == sessionId
+        && incoming().ownerUid == request.auth.uid
+        && incoming().createdAt == request.time;
+      allow update: if isVerified() && isValidId(sessionId)
+        && isValidSimulationSession(incoming())
+        && incoming().sessionId == existing().sessionId
+        && incoming().ownerUid == existing().ownerUid
+        && incoming().createdAt == existing().createdAt
+        && (
+          (existing().ownerUid == request.auth.uid && incoming().diff(existing()).affectedKeys().hasOnly(['name'])) ||
+          (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly(['name']))
+        );
+      allow delete: if isVerified() && isValidId(sessionId) && (existing().ownerUid == request.auth.uid || isAdmin());
+    }
+
+    // 6. Connection Verification Probe
+    match /test/{docId} {
+      allow get: if isSignedIn() && isValidId(docId) && docId == 'connection';
+      allow list, create, update, delete: if false;
+    }
+  }
+}

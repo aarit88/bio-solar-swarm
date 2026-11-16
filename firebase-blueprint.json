@@ -1,0 +1,251 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Non-PII operator profile storing role and workspace timestamps.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Operator display name",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "role": {
+          "type": "string",
+          "enum": ["operator", "viewer", "admin"],
+          "description": "RBAC role enforced by Firestore rules"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "displayName", "role", "createdAt", "updatedAt"]
+    },
+    "UserPrivateSecurity": {
+      "title": "UserPrivateSecurity",
+      "description": "Isolated PII sub-document containing operator email and login timestamps.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "minLength": 3,
+          "maxLength": 160
+        },
+        "lastLoginAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "email", "lastLoginAt", "updatedAt"]
+    },
+    "AdminRecord": {
+      "title": "AdminRecord",
+      "description": "Server/console-managed administrator allowlist record.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "grantedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "grantedAt"]
+    },
+    "PodControlState": {
+      "title": "PodControlState",
+      "description": "Authorized activation/deactivation state for an individual Bio-Solar Swarm pod.",
+      "type": "object",
+      "properties": {
+        "podId": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 40,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "zone": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "lastOperatorUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "lastReason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["podId", "label", "zone", "enabled", "lastOperatorUid", "lastReason", "updatedAt"]
+    },
+    "SecurityAuditEvent": {
+      "title": "SecurityAuditEvent",
+      "description": "Immutable cybersecurity audit record for pod power toggles and access events.",
+      "type": "object",
+      "properties": {
+        "logId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "actorUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "action": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "targetPodId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "entryHash": {
+          "type": "string",
+          "minLength": 16,
+          "maxLength": 128
+        },
+        "status": {
+          "type": "string",
+          "enum": ["allowed", "denied", "info"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["logId", "actorUid", "action", "targetPodId", "entryHash", "status", "createdAt"]
+    },
+    "SimulationSession": {
+      "title": "SimulationSession",
+      "description": "Saved engineering simulation benchmark owned by an authenticated operator.",
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "controlMode": {
+          "type": "string",
+          "enum": ["centralized_tower", "fixed_duty", "independent_local", "swarm_pso_aco"]
+        },
+        "populationCount": {
+          "type": "integer"
+        },
+        "pedestrianAqi": {
+          "type": "number"
+        },
+        "verifiedReductionPct": {
+          "type": "number"
+        },
+        "netPowerW": {
+          "type": "number"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["sessionId", "ownerUid", "name", "controlMode", "populationCount", "pedestrianAqi", "verifiedReductionPct", "netPowerW", "createdAt"]
+    },
+    "ConnectivityTest": {
+      "title": "ConnectivityTest",
+      "description": "Read-only connection verification document.",
+      "type": "object",
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        }
+      }
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Operator profile metadata without PII."
+    },
+    "/users/{userId}/private/{docId}": {
+      "schema": { "$ref": "#/entities/UserPrivateSecurity" },
+      "description": "Isolated PII document storing operator email and login timestamps."
+    },
+    "/admins/{userId}": {
+      "schema": { "$ref": "#/entities/AdminRecord" },
+      "description": "Admin role allowlist checked via exists() in Firestore rules."
+    },
+    "/pods/{podId}": {
+      "schema": { "$ref": "#/entities/PodControlState" },
+      "description": "Synchronized individual pod power/activation state."
+    },
+    "/audit_logs/{logId}": {
+      "schema": { "$ref": "#/entities/SecurityAuditEvent" },
+      "description": "Append-only cybersecurity audit log records."
+    },
+    "/sessions/{sessionId}": {
+      "schema": { "$ref": "#/entities/SimulationSession" },
+      "description": "Saved simulation benchmark sessions owned by the creator."
+    },
+    "/test/{docId}": {
+      "schema": { "$ref": "#/entities/ConnectivityTest" },
+      "description": "Read-only connection probe path for getDocFromServer()."
+    }
+  }
+}

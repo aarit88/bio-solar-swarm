@@ -1,0 +1,6 @@
+{
+  "name": "Bio-Solar Swarm Studio",
+  "description": "Decentralized Bio-Solar Urban Air Remediation 3D Digital Twin, Voice-Adaptive Physics Simulation, Cybersecurity Audit Platform, and IEEE 1451 Hardware Backend",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
