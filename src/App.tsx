@@ -18,6 +18,7 @@ import {
   Compass,
   Gauge,
   Layers,
+  Link2,
   LogOut,
   MailCheck,
   Pause,
@@ -39,7 +40,7 @@ import { TutorialOverlay } from './components/TutorialOverlay';
 import { ValidationLabModal } from './components/ValidationLabModal';
 import { VoicePopulationPanel } from './components/VoicePopulationPanel';
 import { useAuth } from './contexts/AuthContext';
-import { db, handleFirestoreError, OperationType } from './lib/firebase';
+import { db, formatFirebaseAuthError, handleFirestoreError, OperationType } from './lib/firebase';
 import { CameraPreset, SwarmViewport, ViewportCameraMatrices } from './scene/SwarmViewport';
 import { createInitialSnapshot, stepSimulationSnapshot } from './simulation/swarm';
 import {
@@ -80,7 +81,16 @@ type ActiveView =
   | 'ai';
 
 export default function App() {
-  const { user, loading, logout, authFetch, getFreshIdToken, resendVerificationEmail } = useAuth();
+  const {
+    user,
+    loading,
+    logout,
+    authFetch,
+    getFreshIdToken,
+    resendVerificationEmail,
+    checkEmailVerification,
+    linkGoogleToCurrentAccount,
+  } = useAuth();
 
   if (loading) {
     return (
@@ -106,10 +116,13 @@ export default function App() {
       userEmail={user.email || user.uid}
       userUid={user.uid}
       emailVerified={user.emailVerified}
+      hasGoogleProvider={user.providerData.some((provider) => provider.providerId === 'google.com')}
       onLogout={logout}
+      onLinkGoogle={linkGoogleToCurrentAccount}
       authFetch={authFetch}
       getFreshIdToken={getFreshIdToken}
       onResendVerification={resendVerificationEmail}
+      onCheckVerification={checkEmailVerification}
     />
   );
 }
@@ -118,20 +131,26 @@ interface AuthenticatedShellProps {
   userEmail: string;
   userUid: string;
   emailVerified: boolean;
+  hasGoogleProvider: boolean;
   onLogout: () => Promise<void>;
+  onLinkGoogle: () => Promise<void>;
   authFetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
   getFreshIdToken: (forceRefresh?: boolean) => Promise<string>;
-  onResendVerification: () => Promise<void>;
+  onResendVerification: () => Promise<boolean>;
+  onCheckVerification: () => Promise<boolean>;
 }
 
 const AuthenticatedSimulationShell: React.FC<AuthenticatedShellProps> = ({
   userEmail,
   userUid,
   emailVerified,
+  hasGoogleProvider,
   onLogout,
+  onLinkGoogle,
   authFetch,
   getFreshIdToken,
   onResendVerification,
+  onCheckVerification,
 }) => {
   const [environment, setEnvironment] = useState<EnvironmentParams>(INITIAL_ENV);
   const envRef = useRef<EnvironmentParams>(INITIAL_ENV);
@@ -142,6 +161,22 @@ const AuthenticatedSimulationShell: React.FC<AuthenticatedShellProps> = ({
   }
   const snapshotRef = useRef<SimulationSnapshot>(initialSnap.current);
   const [snapshot, setSnapshot] = useState<SimulationSnapshot>(initialSnap.current);
+  const activeTreatmentPods = snapshot.nodes.filter(
+    (node) => node.enabled !== false && node.fan_duty > 0.12 && node.flow_m3_h > 0
+  );
+  const treatmentFlow = activeTreatmentPods.reduce((sum, node) => sum + node.flow_m3_h, 0);
+  const inletPm25 = activeTreatmentPods.length
+    ? activeTreatmentPods.reduce((sum, node) => sum + node.cin.pm25, 0) / activeTreatmentPods.length
+    : 0;
+  const outletPm25 = activeTreatmentPods.length
+    ? activeTreatmentPods.reduce((sum, node) => sum + node.cout.pm25, 0) / activeTreatmentPods.length
+    : 0;
+  const pmCaptureRateMgH = activeTreatmentPods.reduce(
+    (sum, node) => sum + (Math.max(0, node.cin.pm25 - node.cout.pm25) * node.flow_m3_h) / 1000,
+    0
+  );
+  const co2CaptureRateGh = activeTreatmentPods.reduce((sum, node) => sum + node.pbr.co2_mass_rate_gh, 0);
+  const oxygenReleaseRateGh = activeTreatmentPods.reduce((sum, node) => sum + node.pbr.o2_evolution_gh, 0);
 
   const [history, setHistory] = useState<TelemetryHistoryPoint[]>([]);
   const [paused, setPaused] = useState(false);
@@ -152,6 +187,12 @@ const AuthenticatedSimulationShell: React.FC<AuthenticatedShellProps> = ({
   const [cameraTrigger, setCameraTrigger] = useState(0);
   const [wsConnected, setWsConnected] = useState(false);
   const [saveNotice, setSaveNotice] = useState<string | null>(null);
+  const [verificationNotice, setVerificationNotice] = useState<string | null>(null);
+  const [verificationError, setVerificationError] = useState<string | null>(null);
+  const [verificationBusy, setVerificationBusy] = useState(false);
+  const [googleLinkBusy, setGoogleLinkBusy] = useState(false);
+  const [googleLinkMessage, setGoogleLinkMessage] = useState<string | null>(null);
+  const [googleLinkError, setGoogleLinkError] = useState<string | null>(null);
 
   // 5-second centered splash + auto-displaying command tutorial
   const [showSplash, setShowSplash] = useState(true);
@@ -165,6 +206,56 @@ const AuthenticatedSimulationShell: React.FC<AuthenticatedShellProps> = ({
 
   // Google Maps Quota Banner (Case A Quota Defense)
   const [mapsQuotaExceeded, setMapsQuotaExceeded] = useState(false);
+
+  const handleResendVerification = async () => {
+    setVerificationNotice(null);
+    setVerificationError(null);
+    setVerificationBusy(true);
+    try {
+      const sent = await onResendVerification();
+      setVerificationNotice(
+        sent
+          ? 'Verification email sent. Check your inbox and spam folder.'
+          : 'This email is already verified. Your account status has been refreshed.'
+      );
+    } catch (err) {
+      setVerificationError(formatFirebaseAuthError(err).message);
+    } finally {
+      setVerificationBusy(false);
+    }
+  };
+
+  const handleCheckVerification = async () => {
+    setVerificationNotice(null);
+    setVerificationError(null);
+    setVerificationBusy(true);
+    try {
+      const verified = await onCheckVerification();
+      setVerificationNotice(
+        verified
+          ? 'Email verified. Your account status is up to date.'
+          : 'Email is not verified yet. Open the verification link in your inbox, then check again.'
+      );
+    } catch (err) {
+      setVerificationError(formatFirebaseAuthError(err).message);
+    } finally {
+      setVerificationBusy(false);
+    }
+  };
+
+  const handleLinkGoogle = async () => {
+    setGoogleLinkMessage(null);
+    setGoogleLinkError(null);
+    setGoogleLinkBusy(true);
+    try {
+      await onLinkGoogle();
+      setGoogleLinkMessage('Google sign-in is connected to this operator account.');
+    } catch (err) {
+      setGoogleLinkError(formatFirebaseAuthError(err).message);
+    } finally {
+      setGoogleLinkBusy(false);
+    }
+  };
 
   // D3.js 2D Performance Heatmap Overlay state + camera matrices ref
   const [showHeatmap, setShowHeatmap] = useState(true);
@@ -664,6 +755,19 @@ const AuthenticatedSimulationShell: React.FC<AuthenticatedShellProps> = ({
           >
             Save Run
           </button>
+          {!hasGoogleProvider && (
+            <button
+              type="button"
+              onClick={handleLinkGoogle}
+              disabled={googleLinkBusy}
+              aria-label="Connect Google sign-in"
+              title="Connect Google sign-in to this account"
+              className="p-1.5 2xl:px-2.5 rounded-md bg-[#3B4859] hover:bg-[#475569] disabled:opacity-60 text-white transition-colors inline-flex items-center gap-1.5"
+            >
+              <Link2 className="w-3.5 h-3.5" />
+              <span className="hidden 2xl:inline text-xs">{googleLinkBusy ? 'Connecting…' : 'Connect Google'}</span>
+            </button>
+          )}
           <div className="hidden xl:flex items-center px-2 py-1 rounded bg-[#1E2630] border border-[#435060] text-[11px] font-mono text-[#CBD5E1] max-w-[170px] truncate">
             {userEmail}
           </div>
@@ -678,6 +782,32 @@ const AuthenticatedSimulationShell: React.FC<AuthenticatedShellProps> = ({
           </button>
         </div>
       </header>
+
+      {(googleLinkMessage || googleLinkError) && (
+        <div
+          role={googleLinkError ? 'alert' : 'status'}
+          className={`fixed right-3 ${emailVerified ? 'top-14' : 'top-24'} z-50 max-w-[min(420px,calc(100vw-1.5rem))] rounded-lg border px-3 py-2 text-xs shadow-lg ${
+            googleLinkError
+              ? 'border-rose-300 bg-rose-50 text-rose-900'
+              : 'border-emerald-300 bg-emerald-50 text-emerald-900'
+          }`}
+        >
+          <div className="flex items-start justify-between gap-3">
+            <span>{googleLinkBusy ? 'Connecting Google…' : googleLinkError || googleLinkMessage}</span>
+            <button
+              type="button"
+              onClick={() => {
+                setGoogleLinkMessage(null);
+                setGoogleLinkError(null);
+              }}
+              aria-label="Dismiss Google connection message"
+              className="font-semibold"
+            >
+              ×
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Google Maps Quota Exceeded Banner (Case A Quota Defense) */}
       {mapsQuotaExceeded && (
@@ -712,20 +842,38 @@ const AuthenticatedSimulationShell: React.FC<AuthenticatedShellProps> = ({
 
       {/* Email Verification Notice (for newly registered unverified email accounts) */}
       {!emailVerified && (
-        <div className="fixed top-12 left-0 right-0 z-30 bg-[#FEF3C7] border-b border-[#F59E0B] text-[#78350F] px-4 py-1.5 text-xs flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <MailCheck className="w-4 h-4 shrink-0" />
-            <span>
-              Verify your email ({userEmail}) to enable Firestore cloud ledger sync alongside SQLite.
-            </span>
+        <div className="fixed top-12 left-0 right-0 z-30 bg-[#FEF3C7] border-b border-[#F59E0B] text-[#78350F] px-4 py-1.5 text-xs">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <MailCheck className="w-4 h-4 shrink-0" />
+              <span>
+                You’re signed in and the simulation is available. Verify {userEmail} to enable Firestore cloud sync.
+              </span>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={handleCheckVerification}
+                disabled={verificationBusy}
+                className="px-2.5 py-1 rounded border border-[#B45309] bg-white/50 hover:bg-white disabled:opacity-60 text-[11px] font-semibold"
+              >
+                {verificationBusy ? 'Checking…' : 'Check Status'}
+              </button>
+              <button
+                type="button"
+                onClick={handleResendVerification}
+                disabled={verificationBusy}
+                className="px-2.5 py-1 rounded bg-[#B45309] text-white text-[11px] font-semibold disabled:opacity-60"
+              >
+                {verificationBusy ? 'Please wait…' : 'Resend Verification'}
+              </button>
+            </div>
           </div>
-          <button
-            type="button"
-            onClick={onResendVerification}
-            className="px-2.5 py-1 rounded bg-[#B45309] text-white text-[11px] font-semibold shrink-0"
-          >
-            Resend Verification
-          </button>
+          {(verificationNotice || verificationError) && (
+            <div role={verificationError ? 'alert' : 'status'} className="mt-1 font-medium">
+              {verificationError || verificationNotice}
+            </div>
+          )}
         </div>
       )}
 
@@ -791,6 +939,35 @@ const AuthenticatedSimulationShell: React.FC<AuthenticatedShellProps> = ({
                 <div className="text-[11px] font-mono tabular-nums text-[#CBD5E1]">
                   PV +{snapshot.totalPvPowerW.toFixed(0)}W / Load {snapshot.totalLoadPowerW.toFixed(0)}W · {snapshot.totalCo2CapturedG.toFixed(1)}g
                 </div>
+              </div>
+            </div>
+            <div className="mt-3 border-t border-white/15 pt-2.5" aria-label="Live pod treatment path">
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-[10px] uppercase tracking-wider font-semibold text-[#D1FAE5]">
+                  Live Pod Treatment · In → Capture → Out
+                </div>
+                <div className="text-[10px] font-mono text-[#CBD5E1]">
+                  {treatmentFlow.toFixed(0)} m³/h through active intakes
+                </div>
+              </div>
+              <div className="mt-2 grid grid-cols-[1fr_auto_1fr_auto_1fr] items-center gap-1 text-[10px]">
+                <div className="rounded-md bg-slate-700/80 px-2 py-1.5">
+                  <div className="text-[#CBD5E1]">Polluted inlet</div>
+                  <div className="font-mono tabular-nums font-semibold text-amber-200">{inletPm25.toFixed(1)} µg/m³ PM2.5</div>
+                </div>
+                <span className="text-amber-300" aria-hidden="true">→</span>
+                <div className="rounded-md bg-slate-700/80 px-2 py-1.5">
+                  <div className="text-[#CBD5E1]">Captured by filters</div>
+                  <div className="font-mono tabular-nums font-semibold text-amber-200">{pmCaptureRateMgH.toFixed(1)} mg/h PM2.5</div>
+                </div>
+                <span className="text-emerald-300" aria-hidden="true">→</span>
+                <div className="rounded-md bg-emerald-950/70 px-2 py-1.5">
+                  <div className="text-emerald-100">Clean-air outlet</div>
+                  <div className="font-mono tabular-nums font-semibold text-emerald-200">{outletPm25.toFixed(1)} µg/m³ · O₂ +{oxygenReleaseRateGh.toFixed(2)} g/h</div>
+                </div>
+              </div>
+              <div className="mt-1.5 text-[10px] text-[#CBD5E1]">
+                Modelled path: intake fan → particulate filter → KMnO₄ adsorption → algae PBR · CO₂ uptake {co2CaptureRateGh.toFixed(2)} g/h
               </div>
             </div>
           </div>

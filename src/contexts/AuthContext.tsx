@@ -1,5 +1,15 @@
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
-import { getAuth, onAuthStateChanged, User } from 'firebase/auth';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  getAuth,
+  GoogleAuthProvider,
+  linkWithCredential,
+  linkWithPopup,
+  linkWithRedirect,
+  onAuthStateChanged,
+  reload,
+  User,
+} from 'firebase/auth';
+import type { AuthCredential } from 'firebase/auth';
 import { doc, getDoc, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 import {
@@ -8,6 +18,7 @@ import {
   EmailAuthProvider,
   ensureAuthPersistence,
   formatFirebaseAuthError,
+  getRedirectResult,
   getOrInitFirebaseApp,
   googleProvider,
   handleFirestoreError,
@@ -18,6 +29,7 @@ import {
   sendPasswordResetEmail,
   signInWithEmailAndPassword,
   signInWithPopup,
+  signInWithRedirect,
   signOut,
   testFirestoreConnection,
   updateProfile,
@@ -39,10 +51,15 @@ interface AuthContextValue {
   clearAuthError: () => void;
   firebaseProjectInfo: FirebaseProjectMetadata;
   signInWithGoogle: () => Promise<void>;
+  linkGoogleToCurrentAccount: () => Promise<void>;
+  googleLinkEmail: string | null;
+  completeGoogleAccountLink: (password: string) => Promise<void>;
+  cancelGoogleAccountLink: () => void;
   signInWithEmail: (email: string, password: string) => Promise<void>;
   registerWithEmail: (email: string, password: string, displayName: string) => Promise<void>;
   resetPassword: (email: string) => Promise<void>;
-  resendVerificationEmail: () => Promise<void>;
+  resendVerificationEmail: () => Promise<boolean>;
+  checkEmailVerification: () => Promise<boolean>;
   logout: () => Promise<void>;
   getFreshIdToken: (forceRefresh?: boolean) => Promise<string>;
   authFetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -56,6 +73,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [loading, setLoading] = useState(true);
   const [firestoreReady, setFirestoreReady] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [googleLinkEmail, setGoogleLinkEmail] = useState<string | null>(null);
+  const [, setUserRefreshVersion] = useState(0);
+  const pendingGoogleCredential = useRef<AuthCredential | null>(null);
 
   const configValidation = useMemo(() => validateFirebaseConfig(firebaseConfig), []);
 
@@ -83,8 +103,60 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     [configValidation, authInstance]
   );
 
+  const requireAuthInstance = useCallback(() => {
+    if (!authInstance) {
+      throw new Error('Firebase Auth is not configured. Check firebase-applet-config.json.');
+    }
+    return authInstance;
+  }, [authInstance]);
+
   const clearAuthError = useCallback(() => {
     setAuthError(null);
+  }, []);
+
+  const captureGoogleLinkError = useCallback((error: unknown) => {
+    const authError = error as { code?: string; customData?: { email?: string } };
+    const email = authError?.customData?.email;
+    if (authError?.code !== 'auth/account-exists-with-different-credential' || !email) {
+      return false;
+    }
+    const credential = GoogleAuthProvider.credentialFromError(
+      error as Parameters<typeof GoogleAuthProvider.credentialFromError>[0]
+    );
+    if (!credential) {
+      return false;
+    }
+    pendingGoogleCredential.current = credential;
+    setGoogleLinkEmail(email);
+    setAuthError(null);
+    return true;
+  }, []);
+
+  const completeGoogleAccountLink = useCallback(async (password: string) => {
+    const a = requireAuthInstance();
+    const credential = pendingGoogleCredential.current;
+    const email = googleLinkEmail;
+    if (!credential || !email) {
+      throw new Error('The Google sign-in attempt expired. Please try Google sign-in again.');
+    }
+    const existingAccount = await signInWithEmailAndPassword(a, email, password);
+    try {
+      await linkWithCredential(existingAccount.user, credential);
+      await reload(existingAccount.user);
+      await existingAccount.user.getIdToken(true);
+    } catch (error) {
+      await signOut(a).catch(() => {});
+      throw error;
+    }
+    pendingGoogleCredential.current = null;
+    setGoogleLinkEmail(null);
+    setAuthError(null);
+    setUserRefreshVersion((version) => version + 1);
+  }, [googleLinkEmail, requireAuthInstance]);
+
+  const cancelGoogleAccountLink = useCallback(() => {
+    pendingGoogleCredential.current = null;
+    setGoogleLinkEmail(null);
   }, []);
 
   const syncOperatorProfile = useCallback(async (u: User) => {
@@ -161,7 +233,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     // Configure resilient persistence before subscribing to auth state
     ensureAuthPersistence(authInstance)
-      .then(() => {
+      .then(async () => {
+        if (cancelled) return;
+        // Complete any Google OAuth redirect before attaching the auth state listener.
+        // This is the reliable fallback when an embedded browser blocks popups.
+        try {
+          await getRedirectResult(authInstance);
+        } catch (err) {
+          if (!cancelled && !captureGoogleLinkError(err)) {
+            setAuthError(formatFirebaseAuthError(err).message);
+          }
+        }
         if (cancelled) return;
         // Boot-time Firestore connectivity verification (non-blocking)
         testFirestoreConnection()
@@ -206,20 +288,44 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       cancelled = true;
       unsubscribe?.();
     };
-  }, [authInstance, configValidation.missingKeys, syncOperatorProfile]);
-
-  const requireAuthInstance = useCallback(() => {
-    if (!authInstance) {
-      throw new Error('Firebase Auth is not configured. Check firebase-applet-config.json.');
-    }
-    return authInstance;
-  }, [authInstance]);
+  }, [authInstance, captureGoogleLinkError, configValidation.missingKeys, syncOperatorProfile]);
 
   const signInWithGoogle = useCallback(async () => {
     const a = requireAuthInstance();
     await ensureAuthPersistence(a);
     setAuthError(null);
-    await signInWithPopup(a, googleProvider);
+    try {
+      await signInWithPopup(a, googleProvider);
+    } catch (err) {
+      const formatted = formatFirebaseAuthError(err);
+      if (captureGoogleLinkError(err)) return;
+      if (formatted.code === 'auth/popup-blocked' || formatted.code === 'auth/web-storage-unsupported') {
+        await signInWithRedirect(a, googleProvider);
+        return;
+      }
+      throw err;
+    }
+  }, [captureGoogleLinkError, requireAuthInstance]);
+
+  const linkGoogleToCurrentAccount = useCallback(async () => {
+    const a = requireAuthInstance();
+    const current = a.currentUser;
+    if (!current) throw new Error('Sign in with your email and password before connecting Google.');
+    if (current.providerData.some((provider) => provider.providerId === 'google.com')) return;
+
+    try {
+      await linkWithPopup(current, googleProvider);
+      await reload(current);
+      await current.getIdToken(true);
+      setUserRefreshVersion((version) => version + 1);
+    } catch (error) {
+      const formatted = formatFirebaseAuthError(error);
+      if (formatted.code === 'auth/popup-blocked' || formatted.code === 'auth/web-storage-unsupported') {
+        await linkWithRedirect(current, googleProvider);
+        return;
+      }
+      throw error;
+    }
   }, [requireAuthInstance]);
 
   const signInWithEmail = useCallback(
@@ -241,7 +347,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (displayName.trim()) {
         await updateProfile(cred.user, { displayName: displayName.trim().slice(0, 80) }).catch(() => {});
       }
-      await sendEmailVerification(cred.user).catch(() => {});
+      await sendEmailVerification(cred.user);
     },
     [requireAuthInstance]
   );
@@ -256,9 +362,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const resendVerificationEmail = useCallback(async () => {
     const a = requireAuthInstance();
-    if (a.currentUser && !a.currentUser.emailVerified) {
-      await sendEmailVerification(a.currentUser);
+    const current = a.currentUser;
+    if (!current) throw new Error('Sign in before requesting a verification email.');
+    await reload(current);
+    if (current.emailVerified) {
+      setUserRefreshVersion((version) => version + 1);
+      return false;
     }
+    await sendEmailVerification(current);
+    return true;
+  }, [requireAuthInstance]);
+
+  const checkEmailVerification = useCallback(async () => {
+    const a = requireAuthInstance();
+    const current = a.currentUser;
+    if (!current) throw new Error('Sign in before checking email verification.');
+    await reload(current);
+    await current.getIdToken(true);
+    setUserRefreshVersion((version) => version + 1);
+    return current.emailVerified;
   }, [requireAuthInstance]);
 
   const logout = useCallback(async () => {
@@ -334,10 +456,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         clearAuthError,
         firebaseProjectInfo,
         signInWithGoogle,
+        linkGoogleToCurrentAccount,
+        googleLinkEmail,
+        completeGoogleAccountLink,
+        cancelGoogleAccountLink,
         signInWithEmail,
         registerWithEmail,
         resetPassword,
         resendVerificationEmail,
+        checkEmailVerification,
         logout,
         getFreshIdToken,
         authFetch,

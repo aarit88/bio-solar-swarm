@@ -940,7 +940,7 @@ async function startServer() {
     });
   }
 
-  server.listen(PORT, '0.0.0.0', () => {
+  server.listen(PORT, '127.0.0.1', () => {
     console.log(`Bio-Solar Swarm server listening on http://localhost:${PORT}`);
   });
 }

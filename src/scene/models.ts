@@ -289,20 +289,20 @@ export function buildSwarmPodModel(
   pvGroup.add(pvCells);
   group.add(pvGroup);
 
-  // 8. Laminar Clean-Air Remediation Cone (projecting down toward pedestrian breathing zone)
+  // 8. Clean-air outlet plume. It widens above the pod to make treated airflow visible.
   const remediationConeMat = new THREE.MeshBasicMaterial({
-    color: 0x34d399,
+    color: 0x2dd4bf,
     transparent: true,
-    opacity: 0.2,
+    opacity: 0.24,
     side: THREE.DoubleSide,
     depthWrite: false,
   });
   const remediationCone = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.45, 2.55, 2.95, 24, 1, true),
+    new THREE.CylinderGeometry(1.45, 0.38, 2.85, 24, 1, true),
     remediationConeMat
   );
-  remediationCone.position.set(0, 1.48, 0.5);
-  remediationCone.rotation.x = 0.18;
+  remediationCone.position.set(0, 2.35, 0.5);
+  remediationCone.rotation.x = -0.06;
   remediationCone.renderOrder = 3;
   group.add(remediationCone);
 

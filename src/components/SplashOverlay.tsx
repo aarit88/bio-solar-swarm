@@ -28,8 +28,15 @@ export const SplashOverlay: React.FC<SplashOverlayProps> = ({ onComplete }) => {
         fading ? 'opacity-0 pointer-events-none' : 'opacity-100 bg-[#25303C]/65'
       }`}
     >
-      <div className="bg-[#EEF2F6]/95 border border-[#B8C4D0] rounded-xl px-10 py-7 shadow-2xl text-center max-w-md mx-4">
-        <div className="text-[11px] font-mono uppercase tracking-[0.22em] text-[#059669] font-semibold">
+      <div className="relative bg-[#EEF2F6]/95 border border-[#B8C4D0] rounded-xl px-10 py-7 shadow-2xl text-center max-w-md mx-4">
+        <button
+          type="button"
+          onClick={onComplete}
+          className="absolute right-3 top-3 rounded-md px-2 py-1 text-[11px] font-medium text-[#475569] hover:bg-[#DCE4EC]"
+        >
+          Skip intro
+        </button>
+        <div className="pt-3 text-[11px] font-mono uppercase tracking-[0.22em] text-[#059669] font-semibold">
           Decentralized Cyber-Physical Network
         </div>
         <h1 className="mt-2 text-3xl sm:text-4xl font-bold tracking-tight text-[#0F172A]">

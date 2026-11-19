@@ -19,6 +19,9 @@ const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 export const AuthGate: React.FC = () => {
   const {
     signInWithGoogle,
+    googleLinkEmail,
+    completeGoogleAccountLink,
+    cancelGoogleAccountLink,
     signInWithEmail,
     registerWithEmail,
     resetPassword,
@@ -58,6 +61,25 @@ export const AuthGate: React.FC = () => {
       setProviderHelp(formatted.isProviderDisabled);
       setDomainHelp(formatted.isUnauthorizedDomain);
       setPopupHelp(formatted.isPopupIssue);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleGoogleAccountLink = async (e: React.FormEvent) => {
+    e.preventDefault();
+    clearFeedback();
+    if (!password) {
+      setError('Enter the password for your existing email account to link Google sign-in.');
+      return;
+    }
+    setBusy(true);
+    try {
+      await completeGoogleAccountLink(password);
+      setPassword('');
+    } catch (err: unknown) {
+      const formatted = formatFirebaseAuthError(err);
+      setError(formatted.message);
     } finally {
       setBusy(false);
     }
@@ -264,6 +286,54 @@ export const AuthGate: React.FC = () => {
             Sign in with Google Account
           </button>
 
+          {googleLinkEmail && (
+            <form
+              onSubmit={handleGoogleAccountLink}
+              noValidate
+              className="space-y-3 rounded-lg border border-[#93C5FD] bg-[#EFF6FF] p-4 text-xs"
+            >
+              <div className="font-semibold text-[#1E3A8A]">Link Google to your existing account</div>
+              <p className="text-[#1E40AF]">
+                An account already exists for <strong>{googleLinkEmail}</strong>. Enter its current password to verify ownership and link Google sign-in. Your password will not be changed.
+              </p>
+              <label className="block space-y-1">
+                <span className="font-medium text-[#334155]">Existing account password</span>
+                <input
+                  type="password"
+                  autoComplete="current-password"
+                  value={password}
+                  onChange={(e) => {
+                    setPassword(e.target.value);
+                    if (error) setError(null);
+                  }}
+                  className="w-full px-3 py-2 rounded-lg bg-white border border-[#CBD5E1] text-[#0F172A] focus:outline-none focus:border-[#2563EB]"
+                />
+              </label>
+              <div className="flex gap-2">
+                <button
+                  type="submit"
+                  disabled={busy}
+                  className="flex-1 py-2 px-3 rounded-lg bg-[#2563EB] hover:bg-[#1D4ED8] disabled:opacity-60 text-white font-semibold"
+                >
+                  {busy ? 'Linking Google…' : 'Verify & Link Google'}
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => {
+                    cancelGoogleAccountLink();
+                    setPassword('');
+                    setError(null);
+                  }}
+                  className="py-2 px-3 rounded-lg border border-[#CBD5E1] bg-white text-[#334155]"
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          )}
+
+          {!googleLinkEmail && <>
           <div className="relative flex items-center py-1">
             <div className="flex-grow border-t border-[#CBD5E1]" />
             <span className="shrink mx-3 text-[11px] font-mono uppercase text-[#64748B]">
@@ -391,6 +461,7 @@ export const AuthGate: React.FC = () => {
                 : 'Register & Send Verification Email'}
             </button>
           </form>
+          </>}
         </div>
       </div>
     </div>

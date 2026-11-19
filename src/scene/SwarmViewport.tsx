@@ -55,6 +55,7 @@ interface ParticleState {
   life: number;
   maxLife: number;
   cleaned: number; // 0 = raw polluted, 1 = remediated
+  capturedBy: number; // index of the pod whose intake captured this particle
 }
 
 // Pre-allocated math scratch objects (zero per-frame GC allocations)
@@ -91,6 +92,7 @@ export const SwarmViewport: React.FC<SwarmViewportProps> = ({
 }) => {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const [contextLost, setContextLost] = useState(false);
+  const [webglUnavailable, setWebglUnavailable] = useState(false);
 
   const selectedNodeRef = useRef(selectedNodeId);
   const onSelectNodeRef = useRef(onSelectNode);
@@ -136,11 +138,21 @@ export const SwarmViewport: React.FC<SwarmViewportProps> = ({
     const width = container.clientWidth || window.innerWidth;
     const height = container.clientHeight || window.innerHeight;
 
-    const renderer = new THREE.WebGLRenderer({
-      antialias: !isSoftwareGl,
-      powerPreference: 'high-performance',
-      preserveDrawingBuffer: true,
-    });
+    let renderer: THREE.WebGLRenderer;
+    try {
+      renderer = new THREE.WebGLRenderer({
+        antialias: !isSoftwareGl,
+        powerPreference: 'high-performance',
+        preserveDrawingBuffer: true,
+      });
+      setWebglUnavailable(false);
+    } catch (error) {
+      console.warn('WebGL is unavailable; continuing without the 3D viewport.', error);
+      onCanvasReadyRef.current?.(null);
+      if (cameraMatricesPropRef.current) cameraMatricesPropRef.current.current = null;
+      setWebglUnavailable(true);
+      return;
+    }
     renderer.setSize(width, height);
     renderer.setPixelRatio(isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, 2));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -471,6 +483,7 @@ export const SwarmViewport: React.FC<SwarmViewportProps> = ({
         life: Math.random() * 6,
         maxLife: 5 + Math.random() * 4,
         cleaned: 0,
+        capturedBy: -1,
       };
     });
 
@@ -616,7 +629,7 @@ export const SwarmViewport: React.FC<SwarmViewportProps> = ({
         const isPodActive = podEnabled && node.fan_duty > 0.1;
         rig.remediationCone.visible = isPodActive;
         rig.remediationConeMat.opacity = isPodActive
-          ? 0.08 + node.fan_duty * 0.24 + 0.03 * Math.sin(elapsed * 4 + idx)
+          ? 0.14 + node.fan_duty * 0.3 + 0.05 * Math.sin(elapsed * 4 + idx)
           : 0;
 
         // PBR algae core color/glow reflects strain & health & operator power
@@ -755,6 +768,7 @@ export const SwarmViewport: React.FC<SwarmViewportProps> = ({
             pt.life = 0;
             pt.maxLife = 5.5 + Math.random() * 4.5;
             pt.cleaned = 0;
+            pt.capturedBy = -1;
           }
 
           // Drift with wind + slight upward buoyancy
@@ -762,21 +776,56 @@ export const SwarmViewport: React.FC<SwarmViewportProps> = ({
           pt.y += pt.vy * dt;
           pt.z += (pt.vz + windVz) * dt;
 
-          // Pull toward nearest active Bio-Solar Swarm Pod
-          for (let pIdx = 0; pIdx < snap.nodes.length; pIdx++) {
-            const node = snap.nodes[pIdx];
-            if (node.fan_duty < 0.12) continue;
+          // Let active intake fans visibly pull nearby dirty particles into a pod.
+          // Captured particles then rise as clean-air/O₂ output, showing both sides of treatment.
+          let capturePodIndex = pt.capturedBy;
+          if (capturePodIndex < 0) {
+            let nearestDistSq = 81;
+            for (let pIdx = 0; pIdx < snap.nodes.length; pIdx++) {
+              const node = snap.nodes[pIdx];
+              if (node.enabled === false || node.fan_duty < 0.12 || node.pm25_removal_pct <= 0) continue;
+              const dx = node.position.x - pt.x;
+              const dz = node.position.z - pt.z;
+              const distSq = dx * dx + dz * dz;
+              if (distSq < nearestDistSq) {
+                nearestDistSq = distSq;
+                capturePodIndex = pIdx;
+              }
+            }
+          }
+
+          if (capturePodIndex >= 0 && capturePodIndex < snap.nodes.length) {
+            const node = snap.nodes[capturePodIndex];
+            if (node.enabled === false || node.fan_duty < 0.12 || node.pm25_removal_pct <= 0) {
+              pt.capturedBy = -1;
+              pt.cleaned = 0;
+              capturePodIndex = -1;
+            }
+          }
+
+          if (capturePodIndex >= 0 && capturePodIndex < snap.nodes.length) {
+            const node = snap.nodes[capturePodIndex];
             const dx = node.position.x - pt.x;
             const dz = node.position.z - pt.z;
-            const distSq = dx * dx + dz * dz;
-            if (distSq < 38) {
-              const dist = Math.sqrt(distSq) + 0.1;
-              const pull = (node.fan_duty * 5.2 * dt) / (1 + dist * 0.4);
-              pt.x += (dx / dist) * pull;
-              pt.z += (dz / dist) * pull;
-              if (dist < 1.8 && pt.y < 3.4) {
-                pt.cleaned = Math.min(1, pt.cleaned + dt * 2.8);
-                pt.y += dt * 1.2;
+            const dist = Math.hypot(dx, dz) + 0.1;
+            if (pt.cleaned < 0.05 && dist < 9) pt.capturedBy = capturePodIndex;
+
+            if (pt.capturedBy === capturePodIndex && pt.cleaned < 1) {
+              const influence = Math.max(0, 1 - dist / 9);
+              const suction = (2.1 + node.fan_duty * 3.0) * influence * dt;
+              pt.x += (dx / dist) * suction;
+              pt.z += (dz / dist) * suction;
+              if (dist < 1.35 && pt.y < 3.5) {
+                pt.cleaned = Math.min(1, pt.cleaned + dt * 3.2);
+                // Draw the intake into the lower filter, then the treated stream upward.
+                pt.y += pt.y > 0.85 ? -dt * 2.0 : dt * (1.5 + node.fan_duty);
+              }
+            } else if (pt.cleaned >= 1) {
+              pt.x += (node.position.x - pt.x) * Math.min(1, dt * 2.8);
+              pt.z += (node.position.z + 0.5 - pt.z) * Math.min(1, dt * 2.8);
+              pt.y += dt * (1.35 + node.fan_duty * 0.55);
+              if (pt.y > 5.2) {
+                pt.life = pt.maxLife;
               }
             }
           }
@@ -796,7 +845,9 @@ export const SwarmViewport: React.FC<SwarmViewportProps> = ({
         }
 
         const fade = 1 - Math.pow(pt.life / pt.maxLife, 2);
-        const scale = Math.max(0.05, (0.7 + trafficFactor * 0.6) * fade * (1 - pt.cleaned * 0.45));
+        const scale =
+          Math.max(0.05, (0.7 + trafficFactor * 0.6) * fade * (1 - pt.cleaned * 0.45)) *
+          (1 + pt.cleaned * 0.35);
         _dummy.position.set(pt.x, pt.y, pt.z);
         _dummy.scale.setScalar(scale);
         _dummy.updateMatrix();
@@ -804,10 +855,10 @@ export const SwarmViewport: React.FC<SwarmViewportProps> = ({
 
         // Color transition: raw soot-amber/gray -> remediated fresh mist-emerald
         if (pt.cleaned > 0.35) {
-          _color.setRGB(0.45, 0.85, 0.72);
+          _color.setRGB(0.18, 1.0, 0.78);
         } else {
-          const smogTone = 0.28 + (i % 5) * 0.04;
-          _color.setRGB(smogTone + 0.12 * trafficFactor, smogTone + 0.03, smogTone - 0.04);
+          const smogTone = 0.28 + (i % 5) * 0.035;
+          _color.setRGB(smogTone + 0.2 * trafficFactor, smogTone * 0.72, smogTone * 0.32);
         }
         particleMesh.setColorAt(i, _color);
       }
@@ -859,6 +910,19 @@ export const SwarmViewport: React.FC<SwarmViewportProps> = ({
         <div className="absolute inset-0 flex items-center justify-center bg-[#9AA7B4] text-[#1E293B]">
           <div className="bg-[#EEF2F6] border border-[#CBD5E1] rounded-lg px-6 py-4 text-sm font-medium">
             WebGL rendering context interrupted. Restoring 3D scene...
+          </div>
+        </div>
+      )}
+      {webglUnavailable && (
+        <div
+          role="status"
+          className="absolute inset-0 flex items-center justify-center bg-gradient-to-b from-[#CBD5DF] to-[#94A3B8] p-6 text-center text-[#1E293B]"
+        >
+          <div className="max-w-md rounded-xl border border-[#B8C4D0] bg-[#EEF2F6]/95 px-6 py-5 shadow-lg">
+            <div className="text-sm font-semibold">3D view is unavailable in this browser</div>
+            <p className="mt-2 text-xs leading-relaxed text-[#475569]">
+              The simulation is still running. Use the Dashboard and the controls below; enable WebGL in your browser to restore the 3D scene.
+            </p>
           </div>
         </div>
       )}

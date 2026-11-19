@@ -6,6 +6,7 @@ import {
   createUserWithEmailAndPassword,
   EmailAuthProvider,
   getAuth,
+  getRedirectResult,
   GoogleAuthProvider,
   inMemoryPersistence,
   reauthenticateWithCredential,
@@ -15,6 +16,7 @@ import {
   setPersistence,
   signInWithEmailAndPassword,
   signInWithPopup,
+  signInWithRedirect,
   signOut,
   updateProfile,
 } from 'firebase/auth';
@@ -193,14 +195,17 @@ export function formatFirebaseAuthError(error: unknown): FormattedAuthError {
         isPopupIssue: false,
       };
     case 'auth/unauthorized-domain':
+      {
+        const host = typeof window !== 'undefined' ? window.location.hostname : 'this app host';
       return {
         code,
         message:
-          'This preview domain is not yet allowlisted in Firebase Authentication Authorized Domains.',
+          `Firebase Authentication is rejecting "${host}". Add this host under Firebase Console → Authentication → Settings → Authorized domains, then retry Google sign-in.`,
         isProviderDisabled: false,
         isUnauthorizedDomain: true,
         isPopupIssue: false,
       };
+      }
     case 'auth/popup-closed-by-user':
       return {
         code,
@@ -228,11 +233,19 @@ export function formatFirebaseAuthError(error: unknown): FormattedAuthError {
         isPopupIssue: true,
       };
     case 'auth/account-exists-with-different-credential':
+      return {
+        code,
+        message:
+          'An account already exists for this email with another sign-in method. Verify that account first, then link Google sign-in.',
+        isProviderDisabled: false,
+        isUnauthorizedDomain: false,
+        isPopupIssue: false,
+      };
     case 'auth/credential-already-in-use':
       return {
         code,
         message:
-          'This email is registered under a different sign-in provider. Sign in with the method you used originally.',
+          'This Google account is already linked to another operator account. Sign in with that account or choose a different Google account.',
         isProviderDisabled: false,
         isUnauthorizedDomain: false,
         isPopupIssue: false,
@@ -241,7 +254,7 @@ export function formatFirebaseAuthError(error: unknown): FormattedAuthError {
       return {
         code,
         message:
-          'Too many unsuccessful attempts. Wait a short moment before trying again or reset your password.',
+          'Firebase has temporarily rate-limited this request. Wait a few minutes, then retry the sign-in or verification email.',
         isProviderDisabled: false,
         isUnauthorizedDomain: false,
         isPopupIssue: false,
@@ -350,6 +363,8 @@ export {
   sendPasswordResetEmail,
   signInWithEmailAndPassword,
   signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
   signOut,
   updateProfile,
 };
